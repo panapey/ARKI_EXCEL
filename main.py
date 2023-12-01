@@ -1,10 +1,9 @@
-import re
+import glob
+from datetime import datetime
 
-import chardet
+import mysql.connector
 import pandas as pd
-import pymysql
 
-# Ваши данные для подключения к базе данных
 db_config = {
     'host': 'HOST',
     'port': PORT,
@@ -13,89 +12,80 @@ db_config = {
     'db': 'DB',
 }
 
+current_date = datetime.now().strftime('%Y-%m-%d')
 
-def format_address(address):
-    try:
-        # Удаляем пробелы по краям
-        address = address.strip()
-        # Заменяем "г." на "г."
-        address = re.sub(r"г\.", "г.", address)
-        # Заменяем "мкр." на "мкр."
-        address = re.sub(r"мкр\.", "мкр.", address)
-        # Заменяем "д." на "д."
-        address = re.sub(r"д\.", "д.", address)
-        # Заменяем "с." на "с."
-        address = re.sub(r"с\.", "с.", address)
-        # Заменяем "п." на "п."
-        address = re.sub(r"п\.", "п.", address)
-        # Заменяем "тер." на "тер."
-        address = re.sub(r"тер\.", "тер.", address)
-        # Заменяем "ул." на ""
-        address = re.sub(r"ул\.", "", address)
-        # Заменяем "пер." на "пер."
-        address = re.sub(r"пер\.", "пер.", address)
-        # Заменяем "пр-кт." на "пр-кт."
-        address = re.sub(r"пр-кт\.", "пр-кт.", address)
-        # Заменяем "проезд." на "проезд."
-        address = re.sub(r"проезд\.", "проезд", address)
-        # Заменяем "аллея." на "аллея"
-        address = re.sub(r"аллея\.", "аллея", address)
-        # Заменяем "к." на "к"
-        address = re.sub(r"к\.", "к", address)
-        # Удаляем все лишние пробелы
-        address = re.sub(r"\s+", " ", address)
-        # Удаляем пробел перед "к"
-        address = re.sub(r" к", "к", address)
-        # Удаляем запятую между городом и улицей
-        address = re.sub(r", ", " ", address)
-        # Приводим адрес к шаблону "г. Город, д. Деревня, ул. Улица, д. ДомКорпус"
-        address = re.sub(
-            r"(г\.\s*)(\w+\\,)(,\s*б-р\.\s*|,\s*д\.\s*|,\s*ул\.\s*)?(\w+)?(,\s*д\.\s*)(\d+\w*)",
-            r"\1\2\3\4\5\6", address)
-        # Удаляем "д." если за ним следуют цифры
-        address = re.sub(r"д\.\s*(\d+)", r"\1", address)
-    except Exception as e:
-        address = ""
-    return address
+cnx = mysql.connector.connect(**db_config)
 
-
-rawdata = open('addresses.xlsx', 'rb').read()
-result = chardet.detect(rawdata)
-encoding = result['encoding']
-
-# Считываем CSV-файл
-df = pd.read_excel('addresses.xlsx')
-print(df.columns)
-
-# Применяем функцию format_address к каждому адресу в столбце 'Address'
-df['Address'] = df['Address'].apply(format_address)
-
-# Создаем соединение с базой данных MySQL
-conn = pymysql.connect(host=db_config['host'], user=db_config['user'], password=db_config['password'],
-                       db=db_config['db'])
+cursor = cnx.cursor()
+cnx = mysql.connector.connect(**db_config)
 
 # Создаем курсор для выполнения SQL-запросов
-cursor = conn.cursor()
+cursor = cnx.cursor()
 
-# Создаем новый столбец в DataFrame для хранения результатов запроса
-df['QueryResults'] = ''
 
-# Проходим по каждому адресу в DataFrame
-for index, row in df.iterrows():
-    # Создаем SQL-запрос с текущим адресом
-    query = f"SELECT GROUP_NAME FROM `groups` g WHERE g.GROUP_NAME LIKE '%{row['Address']}%'"
+def query_and_search():
+    # Считываем данные из файла Excel
+    df = pd.read_excel('ARKI.xlsx', engine='openpyxl')
+
+    # Получаем данные из колонки group_id
+    group_ids = df['group_id'].tolist()
+
+    # Словарь с данными для подключения к базе данных
+
+    # Создаем соединение с базой данных
+
+    # Для каждого group_id в списке
+    for group_id in group_ids:
+        # Создаем SQL-запрос
+        query = f"""
+    SELECT dev.DEVICE_ID, dev.DEVICE_NAME, ap.PARAMETER_NAME, d.MEASURE_VALUE
+                            FROM powerdb.devices dev
+                            LEFT JOIN powerdb.adapters a 
+                            ON dev.DEVICE_ID = a.ID_DEVICE
+                            LEFT JOIN powerdb.adapter_parameters ap 
+                            ON a.ID_ADAPTER = ap.ID_ADAPTER
+                            LEFT OUTER JOIN powerdb.records r 
+                            ON a.ID_ADAPTER = r.ID_ADAPTER
+                            LEFT OUTER JOIN powerdb.data d 
+                            ON ap.ID_PARAMETER = d.ID_PARAMETER and r.ID_RECORD = d.ID_RECORD
+                            RIGHT JOIN powerdb.groups g
+        on  dev.DEVICE_ID = g.DEVICE_ID
+                            WHERE (r.RECORD_TIME = '{current_date}' or r.RECORD_TIME is NULL) 
+
+                            and ap.PARAMETER_NAME like "Тепловая энергия%"
+                            and g.ID_OWNER = {group_id}
+                            ORDER BY dev.DEVICE_NAME;
+    """
+
+        # Выполняем SQL-запрос
+        cursor.execute(query)
+
+        # Получаем все строки
+        rows = cursor.fetchall()
+
+        # Выводим результаты
+        for row in rows:
+            print(row)
+
+    # Создаем SQL-запрос для получения device_id
+    query_device_id = "SELECT DEVICE_ID FROM powerdb.devices"
 
     # Выполняем SQL-запрос
-    cursor.execute(query)
+    cursor.execute(query_device_id)
 
-    # Получаем все строки из результата запроса
-    rows = cursor.fetchall()
+    # Получаем все строки
+    device_ids = cursor.fetchall()
 
-    # Записываем результаты запроса в новый столбец
-    df.at[index, 'QueryResults'] = str(rows)
+    # Закрываем соединение с базой данных
+    cnx.close()
 
-# Закрываем соединение с базой данных
-conn.close()
+    # Поиск device_id в txt файлах
+    for device_id in device_ids:
+        device_id = device_id[0]  # Извлекаем device_id из кортежа
+        for file in glob.glob("*.txt"):  # Перебираем все txt файлы в текущей директории
+            with open(file, 'r') as f:
+                if str(device_id) in f.read():
+                    print(f"Device ID {device_id} found in {file}")
 
-# Сохраняем результат в новый CSV-файл
-df.to_excel('./addresses.xlsx')
+
+query_and_search()
